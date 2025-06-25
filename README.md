@@ -6,7 +6,7 @@ Welcome to the Gemini CLI Core Package codelab! This hands-on tutorial will teac
 
 - Node.js 18+ installed
 - Basic TypeScript/JavaScript knowledge
-- Gemini API key (get one at https://aistudio.google.com/app/apikey)
+- Gemini API key (get one at <https://aistudio.google.com/app/apikey>)
 
 ## 🚀 Getting Started
 
@@ -88,22 +88,6 @@ npm run step4
 - Handling tool approval prompts
 - ToolConfirmationOutcome options (ProceedOnce, ProceedAlwaysTool, Cancel)
 - Managing tool execution lifecycle
-
-### Step 5: Advanced Integration (10 min)
-
-Combine all features into a polished CLI experience with custom tools.
-
-```bash
-npm run step5
-```
-
-**Key concepts:**
-
-- Building a complete REPL interface
-- Creating custom tools (CalculatorTool example)
-- Streaming with spinners and colored output
-- Integrating CoreToolScheduler with chat flow
-- Handling all tool states and user interactions
 
 ## 📚 Resources
 
