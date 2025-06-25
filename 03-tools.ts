@@ -23,6 +23,91 @@ import {
 } from "@google/gemini-cli-core";
 import type { FunctionCall } from "@google/genai";
 
+async function runChatWithTool(prompt: string, config: Config) {
+  const geminiClient = config.getGeminiClient();
+  const toolRegistry = await config.getToolRegistry();
+  const chat = geminiClient.getChat();
+
+  console.log(`👤 User: ${prompt}\n`);
+
+  let messages = [{ role: "user", parts: [{ text: prompt }] }];
+
+  while (true) {
+    const functionCalls: FunctionCall[] = [];
+    let streamedText = "";
+
+    const responseStream = await chat.sendMessageStream({
+      message: messages[0]?.parts || [],
+      config: {
+        tools: [
+          { functionDeclarations: toolRegistry.getFunctionDeclarations() },
+        ],
+      },
+    });
+
+    for await (const chunk of responseStream) {
+      if (chunk.candidates?.[0]?.content?.parts) {
+        for (const part of chunk.candidates[0].content.parts) {
+          if (part.text) {
+            streamedText += part.text;
+          }
+          if (part.functionCall) {
+            functionCalls.push(part.functionCall);
+          }
+        }
+      }
+    }
+
+    if (functionCalls.length > 0) {
+      console.log("\n🤔 Thinking...");
+      if (streamedText) {
+        process.stdout.write("\x1b[2m" + streamedText + "\x1b[0m");
+      }
+      const toolResponseParts: any[] = [];
+
+      for (const fc of functionCalls) {
+        const callId = fc.id ?? `${fc.name}-${Date.now()}`;
+        const requestInfo: ToolCallRequestInfo = {
+          callId,
+          name: fc.name as string,
+          args: (fc.args ?? {}) as Record<string, unknown>,
+          isClientInitiated: false,
+        };
+
+        const toolResponse = await executeToolCall(
+          config,
+          requestInfo,
+          toolRegistry,
+          new AbortController().signal
+        );
+
+        if (toolResponse.responseParts) {
+          const output = (toolResponse.responseParts as any).functionResponse.response.output;
+          console.log(
+            `\n🛠️ Tool Output (${fc.name}):\n`,
+            output,
+          );
+          const parts = Array.isArray(toolResponse.responseParts)
+            ? toolResponse.responseParts
+            : [toolResponse.responseParts];
+          for (const part of parts) {
+            if (typeof part === "string") {
+              toolResponseParts.push({ text: part });
+            } else if (part) {
+              toolResponseParts.push(part);
+            }
+          }
+        }
+      }
+      messages = [{ role: "user", parts: toolResponseParts }];
+    } else {
+      console.log("\n🤖 Assistant:");
+      console.log(streamedText);
+      break;
+    }
+  }
+}
+
 async function main() {
   // 1. Check for API key
   if (!process.env.GEMINI_API_KEY) {
@@ -45,9 +130,6 @@ async function main() {
 
   // 3. Initialize
   await config.refreshAuth(AuthType.USE_GEMINI);
-  const geminiClient = config.getGeminiClient();
-  const toolRegistry = await config.getToolRegistry();
-  const chat = geminiClient.getChat();
 
   console.log("🔨 Available Tools:");
   console.log(`- ${WriteFileTool.Name}: Create/update files`);
@@ -59,177 +141,20 @@ async function main() {
   console.log(
     "Let's see how Gemini handles questions that don't need tools...\n"
   );
-
-  const detectPrompt = "What's the capital of France?";
-  console.log(`👤 User: ${detectPrompt}`);
-
-  const detectResponse = await chat.sendMessageStream({
-    message: detectPrompt,
-    config: {
-      tools: [{ functionDeclarations: toolRegistry.getFunctionDeclarations() }],
-    },
-  });
-
-  let hasTools1 = false;
-  const chunks1 = [];
-  for await (const chunk of detectResponse) {
-    chunks1.push(chunk);
-    // Check for function calls in the current chunk
-    if (chunk.candidates?.[0]?.content?.parts) {
-      for (const part of chunk.candidates[0].content.parts) {
-        if (part.functionCall) {
-          hasTools1 = true;
-        }
-        if (part.text && !part.thought) {
-          process.stdout.write(part.text);
-        }
-      }
-    }
-  }
-
-  console.log(
-    `\n\n✅ Tool calls detected: ${hasTools1 ? "Yes" : "No"} (Expected: No)\n`
-  );
-
-  // Wait a moment to avoid rate limits
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+  await runChatWithTool("What's the capital of France?", config);
 
   // 5. Demo 2: Tool Execution
-  console.log("📝 Part 2: Tool Execution - File Creation");
+  console.log("\n📝 Part 2: Tool Execution - File Creation");
   console.log("Now let's create a real file using tools...\n");
+  await runChatWithTool(
+    'Create a file called gemini_demo.txt with the content "Hello from Gemini tools! This file was created automatically."',
+    config
+  );
 
-  const execPrompt =
-    'Create a file called gemini_demo.txt with the content "Hello from Gemini tools! This file was created automatically."';
-  console.log(`👤 User: ${execPrompt}\n`);
-
-  const execResponse = await chat.sendMessageStream({
-    message: execPrompt,
-    config: {
-      tools: [{ functionDeclarations: toolRegistry.getFunctionDeclarations() }],
-    },
-  });
-
-  // Collect all function calls from the streaming response
-  const allFunctionCalls: FunctionCall[] = [];
-  let modelText = "";
-
-  for await (const chunk of execResponse) {
-    // Extract function calls from this chunk
-    if (chunk.candidates?.[0]?.content?.parts) {
-      for (const part of chunk.candidates[0].content.parts) {
-        if (part.functionCall) {
-          allFunctionCalls.push(part.functionCall);
-        }
-        if (part.text && !part.thought) {
-          modelText += part.text;
-          process.stdout.write(part.text);
-        }
-      }
-    }
-  }
-
-  // Execute any function calls
-  if (allFunctionCalls.length > 0) {
-    console.log("\n\n🔧 Executing tool calls...\n");
-
-    for (const fc of allFunctionCalls) {
-      console.log(`📌 Tool: ${fc.name}`);
-      console.log(`📋 Args: ${JSON.stringify(fc.args, null, 2)}`);
-
-      // Create request info for the tool execution
-      const requestInfo: ToolCallRequestInfo = {
-        callId: fc.id || `${fc.name}-${Date.now()}`,
-        name: fc.name || '',
-        args: fc.args || {},
-        isClientInitiated: false,
-      };
-
-      try {
-        const result = await executeToolCall(
-          config,
-          requestInfo,
-          toolRegistry,
-          new AbortController().signal
-        );
-
-        if (result.error) {
-          console.error(`❌ Error: ${result.error.message}\n`);
-        } else {
-          console.log(`✅ Success!`);
-          if (result.resultDisplay) {
-            console.log(`📊 Result: ${result.resultDisplay}\n`);
-          }
-        }
-      } catch (error) {
-        console.error(`❌ Failed to execute tool: ${error instanceof Error ? error.message : String(error)}\n`);
-      }
-    }
-  } else {
-    console.log("\n❓ No function calls detected in the response");
-  }
-
-  // Wait before next operation
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-
-  // 6. Verify with another tool
-  console.log("\n📂 Part 3: Verification - List Files");
+  // 6. Demo 3: Tool Execution w/ response
+  console.log("\n📂 Part 3: Feeding tool response");
   console.log("Let's verify the file was created by listing .txt files...\n");
-
-  const verifyPrompt = "List all .txt files in the current directory";
-  console.log(`👤 User: ${verifyPrompt}\n`);
-
-  const verifyResponse = await chat.sendMessageStream({
-    message: verifyPrompt,
-    config: {
-      tools: [{ functionDeclarations: toolRegistry.getFunctionDeclarations() }],
-    },
-  });
-
-  const verifyFunctionCalls: FunctionCall[] = [];
-  let verifyText = "";
-
-  for await (const chunk of verifyResponse) {
-    if (chunk.candidates?.[0]?.content?.parts) {
-      for (const part of chunk.candidates[0].content.parts) {
-        if (part.functionCall) {
-          verifyFunctionCalls.push(part.functionCall);
-        }
-        if (part.text && !part.thought) {
-          verifyText += part.text;
-          process.stdout.write(part.text);
-        }
-      }
-    }
-  }
-
-  if (verifyFunctionCalls.length > 0) {
-    console.log("\n\n🔧 Executing verification tool calls...\n");
-
-    for (const fc of verifyFunctionCalls) {
-      const requestInfo: ToolCallRequestInfo = {
-        callId: fc.id || `${fc.name}-${Date.now()}`,
-        name: fc.name || '',
-        args: fc.args || {},
-        isClientInitiated: false,
-      };
-
-      try {
-        const result = await executeToolCall(
-          config,
-          requestInfo,
-          toolRegistry,
-          new AbortController().signal
-        );
-
-        if (!result.error && result.resultDisplay) {
-          console.log("📁 Directory contents:");
-          console.log(result.resultDisplay);
-        }
-      } catch (error) {
-        console.error(`❌ Failed to execute verification: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  }
+  await runChatWithTool("List all .txt files in the current directory", config);
 
   // 7. Clean up
   console.log("\n\n🧹 Cleaning up...");
@@ -240,8 +165,6 @@ async function main() {
   } catch {
     console.log("ℹ️  File already cleaned up\n");
   }
-
-  console.log("🎉 Tools demo complete!\n");
 }
 
 // Run the example
