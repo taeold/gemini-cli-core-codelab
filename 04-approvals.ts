@@ -51,12 +51,12 @@ async function main() {
     targetDir: process.cwd(),
     cwd: process.cwd(),
     debugMode: false,
-    model: 'gemini-2.5-flash-lite-preview-06-17',
+    model: 'gemini-1.5-flash-latest',
     coreTools: [
       'read_file',
       'write_file', 
       'run_shell_command',
-      'grep'
+      'search_file_content'
     ],
   });
 
@@ -67,16 +67,15 @@ async function main() {
   const chat = geminiClient.getChat();
 
   console.log('🔨 Available Tools:');
-  console.log(`- ${WriteFileTool.Name}: Create/update files (requires approval)`)
+  console.log(`- ${WriteFileTool.Name}: Create/update files (requires approval)`);
   console.log(`- ${ShellTool.Name}: Execute shell commands (requires approval)`);
   console.log(`- ${ReadFileTool.Name}: Read file contents (no approval needed)`);
   console.log(`- ${GrepTool.Name}: Search patterns (no approval needed)\n`);
 
   // 4. Create CoreToolScheduler with approval handling
   const abortController = new AbortController();
-  let scheduler: CoreToolScheduler | null = null;
   
-  const createScheduler = (registry: ToolRegistry) => {
+  const createScheduler = (registry: ToolRegistry, onComplete: (completedCalls: CompletedToolCall[]) => void) => {
     return new CoreToolScheduler({
       config,
       toolRegistry: Promise.resolve(registry),
@@ -85,7 +84,23 @@ async function main() {
         console.log('\n✅ All tool calls completed!');
         for (const call of completedCalls) {
           console.log(`  - ${call.request.name}: ${call.status}`);
+          if (call.status === 'completed' && call.response?.responseParts) {
+            const parts = Array.isArray(call.response.responseParts)
+              ? call.response.responseParts
+              : [call.response.responseParts];
+            for (const part of parts) {
+              if (part.functionResponse) {
+                const responseData = part.functionResponse.response;
+                const output = (responseData as any).content ?? (responseData as any).output ?? responseData;
+                console.log(
+                  `\n🛠️ Tool Output (${call.request.name}):\n`,
+                  JSON.stringify(output, null, 2)
+                );
+              }
+            }
+          }
         }
+        onComplete(completedCalls);
       },
       onToolCallsUpdate: async (toolCalls: ToolCall[]) => {
         // Handle approval prompts
@@ -134,125 +149,89 @@ async function main() {
     });
   };
 
-  // 5. Demo 1: Safe operation (no approval needed)
-  console.log('📝 Demo 1: Safe Operation (No Approval)');
-  console.log('👤 User: Search for TypeScript files in this directory\n');
+  const runDemo = async (title: string, prompt: string) => {
+    console.log(`\n📝 ${title}`);
+    console.log(`👤 User: ${prompt}\n`);
 
-  const response1 = await chat.sendMessageStream({
-    message: 'Use grep to find all TypeScript files (*.ts) in the current directory',
-    config: {
-      tools: [{ functionDeclarations: toolRegistry.getFunctionDeclarations() }],
-    },
-  });
+    let messages: any[] = [{ role: 'user', parts: [{ text: prompt }] }];
 
-  const functionCalls1: Array<{id?: string, name?: string, args?: Record<string, unknown>}> = [];
-  for await (const resp of response1) {
-    if (resp.functionCalls) {
-      functionCalls1.push(...resp.functionCalls);
-    }
-    if (resp.candidates?.[0]?.content?.parts) {
-      for (const part of resp.candidates[0].content.parts) {
-        if (part.text && !part.thought) {
-          process.stdout.write(part.text);
+    while (true) {
+      const response = await chat.sendMessageStream({
+        message: messages[0]?.parts || [],
+        config: {
+          tools: [{ functionDeclarations: toolRegistry.getFunctionDeclarations() }],
+        },
+      });
+
+      const functionCalls: Array<{id?: string, name?: string, args?: Record<string, unknown>}> = [];
+      let streamedText = '';
+
+      for await (const resp of response) {
+        if (resp.functionCalls) {
+          functionCalls.push(...resp.functionCalls);
         }
+        if (resp.candidates?.[0]?.content?.parts) {
+          for (const part of resp.candidates[0].content.parts) {
+            if (part.text && !part.thought) {
+              streamedText += part.text;
+            }
+          }
+        }
+      }
+
+      if (functionCalls.length > 0) {
+        if (streamedText) {
+          process.stdout.write("\x1b[2m" + streamedText + "\x1b[0m");
+        }
+        console.log('\n\n🔧 Executing tools...');
+        
+        const schedulerFinished = new Promise<CompletedToolCall[]>(resolve => {
+          const scheduler = createScheduler(toolRegistry, resolve);
+          const toolRequests: ToolCallRequestInfo[] = functionCalls.map(fc => ({
+            callId: fc.id ?? `${fc.name}-${Date.now()}`,
+            name: fc.name as string,
+            args: (fc.args ?? {}) as Record<string, unknown>,
+            isClientInitiated: false,
+          }));
+          scheduler.schedule(toolRequests, abortController.signal);
+        });
+        
+        const completedCalls = await schedulerFinished;
+        const toolResponseParts: any[] = [];
+        for (const call of completedCalls) {
+          if (call.response?.responseParts) {
+            const parts = Array.isArray(call.response.responseParts)
+              ? call.response.responseParts
+              : [call.response.responseParts];
+            toolResponseParts.push(...parts);
+          }
+        }
+        messages = [{ role: "user", parts: toolResponseParts }];
+
+      } else {
+        console.log(`\n🤖 Assistant:\n${streamedText}`);
+        break;
       }
     }
   }
 
-  if (functionCalls1.length > 0) {
-    console.log('\n\n🔧 Executing tools (no approval needed for grep)...');
-    scheduler = createScheduler(toolRegistry);
-    
-    const toolRequests: ToolCallRequestInfo[] = functionCalls1.map(fc => ({
-      callId: fc.id ?? `${fc.name}-${Date.now()}`,
-      name: fc.name as string,
-      args: (fc.args ?? {}) as Record<string, unknown>,
-    }));
-    
-    await scheduler.schedule(toolRequests, abortController.signal);
-  }
+  // 5. Run Demos in sequence
+  await runDemo(
+    'Demo 1: Safe Operation (No Approval)',
+    'Use the search_file_content tool to find all TypeScript files in the current directory.'
+  );
+  
+  await runDemo(
+    'Demo 2: Destructive Operation (Needs Approval)',
+    'Create a file called gemini_test.md with content explaining what Google Gemini is'
+  );
+  
+  await runDemo(
+    'Demo 3: Shell Command (Needs Approval)',
+    'Run the ls -la command to show detailed directory listing'
+  );
 
-  console.log('\n');
-
-  // 6. Demo 2: Destructive operation (needs approval)
-  console.log('📝 Demo 2: Destructive Operation (Needs Approval)');
-  console.log('👤 User: Create a test file with some Gemini-related content\n');
-
-  const response2 = await chat.sendMessageStream({
-    message: 'Create a file called gemini_test.md with content explaining what Google Gemini is',
-    config: {
-      tools: [{ functionDeclarations: toolRegistry.getFunctionDeclarations() }],
-    },
-  });
-
-  const functionCalls2: Array<{id?: string, name?: string, args?: Record<string, unknown>}> = [];
-  for await (const resp of response2) {
-    if (resp.functionCalls) {
-      functionCalls2.push(...resp.functionCalls);
-    }
-    if (resp.candidates?.[0]?.content?.parts) {
-      for (const part of resp.candidates[0].content.parts) {
-        if (part.text && !part.thought) {
-          process.stdout.write(part.text);
-        }
-      }
-    }
-  }
-
-  if (functionCalls2.length > 0) {
-    console.log('\n\n🔧 Executing tools (approval required for write_file)...');
-    scheduler = createScheduler(toolRegistry);
-    
-    const toolRequests: ToolCallRequestInfo[] = functionCalls2.map(fc => ({
-      callId: fc.id ?? `${fc.name}-${Date.now()}`,
-      name: fc.name as string,
-      args: (fc.args ?? {}) as Record<string, unknown>,
-    }));
-    
-    await scheduler.schedule(toolRequests, abortController.signal);
-  }
-
-  console.log('\n');
-
-  // 7. Demo 3: Shell command (needs approval)
-  console.log('📝 Demo 3: Shell Command (Needs Approval)');
-  console.log('👤 User: Show the current directory listing\n');
-
-  const response3 = await chat.sendMessageStream({
-    message: 'Run the ls -la command to show detailed directory listing',
-    config: {
-      tools: [{ functionDeclarations: toolRegistry.getFunctionDeclarations() }],
-    },
-  });
-
-  const functionCalls3: Array<{id?: string, name?: string, args?: Record<string, unknown>}> = [];
-  for await (const resp of response3) {
-    if (resp.functionCalls) {
-      functionCalls3.push(...resp.functionCalls);
-    }
-    if (resp.candidates?.[0]?.content?.parts) {
-      for (const part of resp.candidates[0].content.parts) {
-        if (part.text && !part.thought) {
-          process.stdout.write(part.text);
-        }
-      }
-    }
-  }
-
-  if (functionCalls3.length > 0) {
-    console.log('\n\n🔧 Executing tools (approval required for shell commands)...');
-    scheduler = createScheduler(toolRegistry);
-    
-    const toolRequests: ToolCallRequestInfo[] = functionCalls3.map(fc => ({
-      callId: fc.id ?? `${fc.name}-${Date.now()}`,
-      name: fc.name as string,
-      args: (fc.args ?? {}) as Record<string, unknown>,
-    }));
-    
-    await scheduler.schedule(toolRequests, abortController.signal);
-  }
-
-  // 8. Clean up
+  // 6. Clean up
   console.log('\n\n🧹 Cleaning up...');
   const fs = await import('fs/promises');
   try {
@@ -261,8 +240,6 @@ async function main() {
   } catch {
     console.log('ℹ️  No cleanup needed');
   }
-
-  
   rl.close();
 }
 
