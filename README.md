@@ -93,5 +93,4 @@ npm run step4
 
 - [Gemini CLI Launch Blog Post](https://blog.google/technology/developers/introducing-gemini-cli-open-source-ai-agent/)
 - [Gemini CLI GitHub Repository](https://github.com/google-gemini/gemini-cli)
-- [Gemini API Documentation](https://ai.google.dev/docs)
 - [@google/gemini-cli-core on npm](https://www.npmjs.com/package/@google/gemini-cli-core)
