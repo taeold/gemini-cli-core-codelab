@@ -1,0 +1,29 @@
+{
+  "name": "gemini-core-codelab",
+  "version": "1.0.0",
+  "description": "Learn to use Gemini CLI Core package - Build Your Own UI",
+  "type": "module",
+  "scripts": {
+    "step1": "tsx 01-hello-world.ts",
+    "step2": "tsx 02-streaming-thinking.ts",
+    "step3": "tsx 03-tools.ts",
+    "step4": "tsx 04-approvals.ts",
+    "step5": "tsx 05-advanced.ts"
+  },
+  "dependencies": {
+    "@google/gemini-cli-core": "^0.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  },
+  "keywords": [
+    "gemini",
+    "cli",
+    "tutorial",
+    "codelab"
+  ],
+  "author": "",
+  "license": "MIT"
+}
