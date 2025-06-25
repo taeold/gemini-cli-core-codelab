@@ -34,7 +34,8 @@ async function runChatWithTool(prompt: string, config: Config) {
 
   while (true) {
     const functionCalls: FunctionCall[] = [];
-    let streamedText = "";
+    let thinkingText = "";
+    let responseText = "";
 
     const responseStream = await chat.sendMessageStream({
       message: messages[0]?.parts || [],
@@ -48,8 +49,12 @@ async function runChatWithTool(prompt: string, config: Config) {
     for await (const chunk of responseStream) {
       if (chunk.candidates?.[0]?.content?.parts) {
         for (const part of chunk.candidates[0].content.parts) {
-          if (part.text) {
-            streamedText += part.text;
+          // The `thought` property is not in the standard GenAI type,
+          // but is added by the core library's wrapper.
+          if ((part as any).thought === true && part.text) {
+            thinkingText += part.text;
+          } else if (part.text) {
+            responseText += part.text;
           }
           if (part.functionCall) {
             functionCalls.push(part.functionCall);
@@ -60,8 +65,10 @@ async function runChatWithTool(prompt: string, config: Config) {
 
     if (functionCalls.length > 0) {
       console.log("\n🤔 Thinking...");
-      if (streamedText) {
-        process.stdout.write("\x1b[2m" + streamedText + "\x1b[0m");
+      // Any text that accompanies a tool call is part of the thinking process.
+      const combinedText = (thinkingText + responseText).trim();
+      if (combinedText) {
+        console.log("\x1b[2m" + combinedText + "\x1b[0m");
       }
       const toolResponseParts: any[] = [];
 
@@ -82,11 +89,9 @@ async function runChatWithTool(prompt: string, config: Config) {
         );
 
         if (toolResponse.responseParts) {
-          const output = (toolResponse.responseParts as any).functionResponse.response.output;
-          console.log(
-            `\n🛠️ Tool Output (${fc.name}):\n`,
-            output,
-          );
+          const output = (toolResponse.responseParts as any).functionResponse
+            .response.output;
+          console.log(`\n🛠️ Tool Output (${fc.name}):\n`, output);
           const parts = Array.isArray(toolResponse.responseParts)
             ? toolResponse.responseParts
             : [toolResponse.responseParts];
@@ -101,8 +106,14 @@ async function runChatWithTool(prompt: string, config: Config) {
       }
       messages = [{ role: "user", parts: toolResponseParts }];
     } else {
+      // This is a final response without a tool call.
+      // It might have thinking steps followed by the answer.
+      if (thinkingText) {
+        console.log("\n🤔 Thinking...");
+        console.log("\x1b[2m" + thinkingText.trim() + "\x1b[0m");
+      }
       console.log("\n🤖 Assistant:");
-      console.log(streamedText);
+      console.log(responseText.trim());
       break;
     }
   }
